@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Ghostty
+Comment=GPU-accelerated terminal emulator
+Exec=ghostty
+Icon=com.mitchellh.ghostty
+Type=Application
+Categories=System;TerminalEmulator;
+StartupNotify=true

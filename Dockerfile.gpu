@@ -1,0 +1,128 @@
+FROM nvidia/cuda:12.6.3-base-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+# 固化进镜像：运行时由 nvidia-container-toolkit 挂载全部 GPU 与驱动库，
+# 且 capabilities 必须含 graphics 才有 OpenGL/EGL（MuJoCo 渲染、gnome-shell 需要）
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=all
+
+# 基础工具 + Mozilla PPA（noble 的 Firefox 只有 snap 版，容器里 snap 不可用，
+# 必须用 deb 源）+ Ghostty PPA（官方源 26.04 才有，用社区构建版）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      software-properties-common ca-certificates wget gnupg \
+    && add-apt-repository -y ppa:mozillateam/ppa \
+    && printf 'Package: *\nPin: release o=LP-PPA-mozillateam\nPin-Priority: 1001\n' \
+       > /etc/apt/preferences.d/mozilla \
+    && add-apt-repository -y ppa:mkasberg/ghostty-ubuntu \
+    && rm -rf /var/lib/apt/lists/*
+
+# GNOME 桌面 + RDP + 中文输入法 + 中文字体 + 浏览器 + Ghostty 终端 + 编程字体
+# ubuntu-desktop-minimal 不带 --no-install-recommends 会拖进 gdm3/snap 相关推荐包，
+# 容器里没有 systemd 用不上；核心组件（gnome-shell/gnome-session/ubuntu-session/nautilus）都是 Depends
+# fcitx5-frontend-gtk4 必须有：Ghostty 是 GTK4 应用，中文输入靠它
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ubuntu-desktop-minimal gnome-terminal gnome-control-center \
+      dbus-x11 xrdp xorgxrdp sudo \
+      fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 \
+      fcitx5-frontend-gtk4 fcitx5-frontend-qt5 im-config \
+      libglib2.0-bin \
+      fonts-dejavu-core fonts-noto-cjk fonts-jetbrains-mono \
+      firefox ghostty dconf-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# UTF-8 locale：gnome-terminal-server 拒绝在非 UTF-8 locale 下启动
+# （xrdp 会话缺 LANG 时 Locale=POSIX，终端直接打不开），生成中文 UTF-8 并设为系统默认
+RUN apt-get update && apt-get install -y --no-install-recommends locales \
+    && echo "zh_CN.UTF-8 UTF-8" >> /etc/locale.gen \
+    && locale-gen \
+    && printf 'LANG=zh_CN.UTF-8\n' > /etc/default/locale \
+    && rm -rf /var/lib/apt/lists/*
+
+# Mesa GL/EGL 与诊断工具；NVIDIA 驱动用户态库由运行时 toolkit 挂载
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libgl1 libegl1 libgles2 libgl1-mesa-dri libglx-mesa0 \
+      mesa-utils libglvnd0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 系统级 dconf 默认值：等宽字体 JetBrains Mono（GNOME Terminal 默认跟随系统等宽字体，
+# 解决默认字体在中文环境下字间距过大的问题）；默认终端与 dock 固定项给 Ghostty
+RUN mkdir -p /etc/dconf/db/local.d /etc/dconf/profile \
+    && printf 'user-db:user\nsystem-db:local\n' > /etc/dconf/profile/user \
+    && printf '%s\n' \
+       '[org/gnome/desktop/interface]' \
+       "monospace-font-name='JetBrains Mono 11'" \
+       '' \
+       '[org/gnome/desktop/default-applications/terminal]' \
+       "exec='ghostty'" \
+       "exec-arg=''" \
+       '' \
+       '[org/gnome/shell]' \
+       "favorite-apps=['com.mitchellh.ghostty.desktop', 'firefox.desktop', 'google-chrome.desktop', 'code.desktop', 'org.gnome.Nautilus.desktop']" \
+       > /etc/dconf/db/local.d/00-lab-defaults \
+    && dconf update
+
+# Chrome（官方 deb）；root 运行必须 --no-sandbox，连系统 .desktop 一起改，
+# 否则经 xdg-open/应用菜单启动会静默失败
+RUN apt-get update \
+    && wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb \
+    && apt-get install -y /tmp/chrome.deb \
+    && rm /tmp/chrome.deb \
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i 's|^Exec=/usr/bin/google-chrome-stable|Exec=/usr/bin/google-chrome-stable --no-sandbox|' \
+       /usr/share/applications/google-chrome.desktop
+
+# VSCode（官方 deb，宿主机经代理下载后放入构建上下文）
+COPY code.deb /tmp/code.deb
+RUN apt-get update \
+    && apt-get install -y /tmp/code.deb \
+    && rm /tmp/code.deb \
+    && rm -rf /var/lib/apt/lists/* \
+    && cp /usr/share/code/resources/app/resources/linux/code.png \
+       /usr/share/icons/hicolor/48x48/apps/code.png \
+    && gtk-update-icon-cache /usr/share/icons/hicolor/
+
+# gnome-keyring：VSCode 等应用通过 libsecret 存令牌，缺了会弹
+# "OS keyring is not available" 警告
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       gnome-keyring libsecret-1-0 libsecret-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# 开发工具链：git / Node.js 22 LTS（npmmirror 官方二进制）/ uv（清华 pypi）
+# noble 的 python 启用了 PEP 668，pip 装到系统必须 --break-system-packages
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git xz-utils python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && V=$(wget -qO- --timeout=20 "https://registry.npmmirror.com/-/binary/node/latest-v22.x/" \
+          | grep -oE "node-v22\.[0-9]+\.[0-9]+-linux-x64\.tar\.gz" \
+          | sed "s/-linux-x64.*//;s/node-//" | sort -t. -k2,2n -k3,3n | tail -1) \
+    && wget -q --timeout=180 -O /tmp/node.tar.gz \
+       "https://registry.npmmirror.com/-/binary/node/latest-v22.x/node-${V}-linux-x64.tar.gz" \
+    && tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 \
+    && rm -f /tmp/node.tar.gz \
+    && pip3 install -q --break-system-packages -i https://pypi.tuna.tsinghua.edu.cn/simple uv \
+    && rm -rf /root/.cache/pip
+
+# MuJoCo 仿真环境：独立 venv，系统 python 不被污染
+# MUJOCO_GL=egl 走 NVIDIA EGL 离屏渲染，无需显示器即可出图
+RUN uv venv --python /usr/bin/python3 /opt/mujoco \
+    && uv pip install --python /opt/mujoco/bin/python \
+       -i https://pypi.tuna.tsinghua.edu.cn/simple mujoco numpy \
+    && printf 'export PATH="/opt/mujoco/bin:$PATH"\nexport MUJOCO_GL=egl\n' \
+       > /etc/profile.d/mujoco.sh
+
+# 与宿主机相同的 RDP 会话策略：断线即结束会话、断线重连续接原会话
+RUN sed -i 's/^KillDisconnected=.*/KillDisconnected=true/' /etc/xrdp/sesman.ini \
+    && sed -i 's/^Policy=.*/Policy=UBD/' /etc/xrdp/sesman.ini
+
+RUN echo 'root:root' | chpasswd
+
+# 桌面快捷方式模板（start-gpu.sh 在每次启动时同步到 /root/Desktop）
+# skel/ 与 XFCE 版共用；skel-gpu/ 是 GPU 版专属（Ghostty 等）
+COPY skel/ /opt/skel/
+COPY skel-gpu/ /opt/skel-gpu/
+COPY start-gpu.sh /start.sh
+RUN chmod +x /start.sh
+
+EXPOSE 3389
+CMD ["/start.sh"]
