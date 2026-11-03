@@ -1,0 +1,7 @@
+# 大文件 / 构建产物
+code.deb
+
+# 数据卷（容器 /root 持久化数据、宿主机↔容器交换目录）
+home/
+share/*
+!share/.gitkeep
