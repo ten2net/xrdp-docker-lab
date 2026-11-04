@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ubuntu-desktop-minimal 不带 --no-install-recommends 会拖进 gdm3/snap 相关推荐包，
 # 容器里没有 systemd 用不上；核心组件（gnome-shell/gnome-session/ubuntu-session/nautilus）都是 Depends
 # fcitx5-frontend-gtk4 必须有：Ghostty 是 GTK4 应用，中文输入靠它
+# 这里先装发行版 xrdp/xorgxrdp（带来 /etc/xrdp、startwm.sh、PAM 等配套文件），
+# 下一层再用 0.10.x 源码覆盖安装
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ubuntu-desktop-minimal gnome-terminal gnome-control-center \
       dbus-x11 xrdp xorgxrdp sudo \
@@ -28,6 +30,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libglib2.0-bin \
       fonts-dejavu-core fonts-noto-cjk fonts-jetbrains-mono \
       firefox ghostty dconf-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# 用 0.10.x 源码覆盖 xrdp/xorgxrdp：noble 源的 0.9.24/0.9.19 组合在 GNOME 46 下
+# 有鼠标点击无响应等已知问题，且 0.9.x 已停止维护；0.10.x 是当前维护分支
+# 注意 xrdp 与 xorgxrdp 版本必须配套（client_info 版本校验不配套会直接拒绝会话）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential libpam0g-dev libssl-dev libjpeg-dev libfuse-dev \
+      pkg-config xserver-xorg-dev nasm \
+      libxfixes-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+    && cd /tmp \
+    && wget -q https://github.com/neutrinolabs/xrdp/releases/download/v0.10.6.1/xrdp-0.10.6.1.tar.gz \
+    && wget -q https://github.com/neutrinolabs/xorgxrdp/releases/download/v0.10.5/xorgxrdp-0.10.5.tar.gz \
+    && tar xzf xrdp-0.10.6.1.tar.gz && tar xzf xorgxrdp-0.10.5.tar.gz \
+    && cd /tmp/xrdp-0.10.6.1 \
+    && ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --disable-static \
+    && make -j"$(nproc)" && make install \
+    # deb 版的 xrdp.pc（0.9.24）在 multiarch 目录抢先被 pkg-config 找到，覆盖为源码版
+    && cp /usr/lib/pkgconfig/xrdp.pc /usr/lib/x86_64-linux-gnu/pkgconfig/xrdp.pc \
+    && cd /tmp/xorgxrdp-0.10.5 \
+    && ./configure --prefix=/usr \
+    && make -j"$(nproc)" && make install \
+    && cd / \
+    && rm -rf /tmp/xrdp-0.10.6.1 /tmp/xorgxrdp-0.10.5 /tmp/xrdp-0.10.6.1.tar.gz /tmp/xorgxrdp-0.10.5.tar.gz \
+    && apt-get purge -y build-essential libpam0g-dev libssl-dev libjpeg-dev \
+       libfuse-dev pkg-config xserver-xorg-dev \
+    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 # UTF-8 locale：gnome-terminal-server 拒绝在非 UTF-8 locale 下启动

@@ -124,6 +124,8 @@ xrdp-docker-lab/
 - **home 幂等初始化**：`start.sh` / `start-gpu.sh` 每次启动检查并补齐 `.xinputrc`、fcitx5 配置、桌面快捷方式（含 `gio set metadata::trusted`），数据卷重建后无需手工配置。
 - **GPU 版 GNOME on Xorg**：容器无 systemd/logind，`start-gpu.sh` 写入 `~/.xsessionrc` 显式声明 `XDG_SESSION_TYPE=x11` 等变量，GNOME 才能经 xrdp 正常拉起；GNOME Shell 的 LoginManager 强制依赖 `org.freedesktop.login1`（Ubuntu 源没有 elogind），`start-gpu.sh` 以独立模式后台拉起 `systemd-logind` 提供该 D-Bus 服务（注意容器里它不会自行 daemonize，前台运行会阻塞后续 xrdp 启动）；`NVIDIA_DRIVER_CAPABILITIES=all` 固化进镜像，保证 EGL/GL 库被挂载，MuJoCo 离屏渲染开箱可用。
 - **Ghostty 与 24.04 基底**：Ghostty 要求 GTK ≥ 4.10（22.04 只有 4.6），故 GPU 版基底为 Ubuntu 24.04，经社区 PPA（`ppa:mkasberg/ghostty-ubuntu`）安装；系统等宽字体经 dconf 系统库设为 JetBrains Mono（键名是 `monospace-font-name`），默认终端与 dock 固定项同在此配置，用户可在桌面环境中自行覆盖。
+- **xrdp/xorgxrdp 源码构建**：noble 源的 xrdp 0.9.24 + xorgxrdp 0.9.19 组合在 GNOME 46 下有输入类已知问题（0.9.x 已停维护），镜像内用 0.10.x 源码覆盖安装（先装 deb 拿 /etc/xrdp、startwm.sh、PAM 等配套文件）。注意：xrdp 与 xorgxrdp 版本必须配套（client_info 校验），且 deb 残留的 `/usr/lib/x86_64-linux-gnu/pkgconfig/xrdp.pc`（0.9.24）会抢先被 pkg-config 找到，需用源码版覆盖。
+- **dbus 重启健壮性**：容器的 /run 随容器层持久化，重启后残留的 pid/socket 会让 init 脚本误判 dbus"已在运行"而跳过启动（gnome-session 会因连不上 system bus 直接中止）。`start-gpu.sh` 启动前清理 `/run/dbus/pid` 和 `system_bus_socket`，并在 init 脚本失效时直接拉起 `dbus-daemon --system` 兜底。
 - **UTF-8 locale 双保险**：xrdp 会话默认无 `LANG`（`nvidia/cuda` 基础镜像没有 `/etc/default/locale`），而 `gnome-terminal-server` 在非 UTF-8 locale 下直接拒绝启动（终端打不开）。镜像内生成 `zh_CN.UTF-8` 并写 `/etc/default/locale`，`start-gpu.sh` 每次启动重写 `~/.xsessionrc`（含 `export LANG=zh_CN.UTF-8`）做会话级保底；`.xsessionrc` 为镜像托管文件，重写而非条件创建，避免旧数据卷沿用缺失变量的历史版本。
 
 ## License

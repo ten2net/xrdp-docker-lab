@@ -2,10 +2,16 @@
 set -e
 
 mkdir -p /run/xrdp
-rm -f /run/xrdp/*.pid
+# /run 随容器层持久化，重启后残留的 pid 会让 xrdp 组件误判"已在运行"而拒绝启动
+# 0.10 的 sesman pid 在 /run/ 根下（/run/xrdp-sesman.pid），不在 /run/xrdp/ 里
+rm -f /run/xrdp/*.pid /run/xrdp-*.pid
 
 # dbus 是 GNOME 会话和 xrdp 桌面启动的必要条件（容器里没有 systemd）
+# /run 随容器层持久化，重启后残留的 pid/socket 会让 init 脚本误判"已在运行"
+# 而跳过启动，导致 system bus 缺失、gnome-session 直接中止
+rm -f /run/dbus/pid /run/dbus/system_bus_socket
 service dbus start
+pgrep -x dbus-daemon >/dev/null || dbus-daemon --system --fork
 
 # GNOME Shell 42 的 LoginManager 强制依赖 org.freedesktop.login1（无 elogind，
 # jammy 源里没有），以独立模式拉起 systemd-logind 提供该 D-Bus 服务。
